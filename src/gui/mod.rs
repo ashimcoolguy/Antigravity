@@ -21,7 +21,7 @@ use crate::settings::Settings;
 use crate::update::{self, ReleaseInfo};
 
 pub const TELEGRAM_GROUP_URL: &str = "https://t.me/nova_txt";
-pub const DONATE_URL: &str = "https://nova-app.eu/donate";
+pub const FORK_URL: &str = "https://github.com/ashimcoolguy/Antigravity";
 
 const WIN_W: f32 = 600.0;
 const WIN_H: f32 = 840.0;

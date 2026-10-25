@@ -20,7 +20,7 @@ use eframe::egui;
 use std::time::Duration;
 
 use super::status::{self, Action, Tone};
-use super::{theme, widgets, App, DONATE_URL, TELEGRAM_GROUP_URL};
+use super::{theme, widgets, App, FORK_URL, TELEGRAM_GROUP_URL};
 use crate::ops::{Cap, Cmd, Level, State};
 use crate::utils::mask_path;
 
@@ -799,13 +799,13 @@ fn footer(ui: &mut egui::Ui) {
         // or its last link is cut off by the window edge.
         ui.add_space(12.0);
         if ui
-            .link(egui::RichText::new("t.me/nova_txt").size(FOOTER_TEXT))
+            .link(egui::RichText::new("ashimcoolguy").size(FOOTER_TEXT))
             .clicked()
         {
-            crate::utils::open_url(TELEGRAM_GROUP_URL);
+            crate::utils::open_url(FORK_URL);
         }
         ui.label(
-            egui::RichText::new("Группа в Telegram:")
+            egui::RichText::new("Форк:")
                 .size(FOOTER_TEXT)
                 .color(theme::MUTED),
         );
@@ -815,13 +815,13 @@ fn footer(ui: &mut egui::Ui) {
                 .color(theme::LINE),
         );
         if ui
-            .link(egui::RichText::new("nova-app.eu/donate").size(FOOTER_TEXT))
+            .link(egui::RichText::new("Brent (t.me/nova_txt)").size(FOOTER_TEXT))
             .clicked()
         {
-            crate::utils::open_url(DONATE_URL);
+            crate::utils::open_url(TELEGRAM_GROUP_URL);
         }
         ui.label(
-            egui::RichText::new("Отблагодарить копеечкой:")
+            egui::RichText::new("Автор оригинала:")
                 .size(FOOTER_TEXT)
                 .color(theme::MUTED),
         );
