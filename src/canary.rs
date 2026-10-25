@@ -21,8 +21,7 @@
 //!    access to that tool's sources at all.
 //!
 //! Nothing here is secret. The derivation is committed so that a clone from
-//! GitHub reproduces the official binary byte for byte - the same "transparent
-//! build" property the licence keys already have (see `auth.rs`). Evidentiary
+//! GitHub reproduces the official binary byte for byte. Evidentiary
 //! weight comes from provenance (this repository published the token first, and
 //! git history dates it), not from obscurity.
 //!

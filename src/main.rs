@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod asar;
-mod auth;
 mod background;
 mod canary;
 mod dns;

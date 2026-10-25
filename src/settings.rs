@@ -42,12 +42,6 @@ pub struct Settings {
     #[serde(default)]
     pub group_key: String,
 
-    /// The licence key this machine last had accepted. Kept so a restart or an
-    /// `_N` update starts straight on the main screen; a key for another 3-digit
-    /// version fails `auth::verify_key` and the licence screen comes back.
-    #[serde(default)]
-    pub license_key: String,
-
     /// When the group code and the user's own proxy were last set (unix
     /// seconds, 0 = never). The one added later goes first in the route table
     /// (owner, 2026-10-05).
@@ -151,7 +145,6 @@ impl Default for Settings {
             client_patch: false,
             auto_patch: true,
             group_key: String::new(),
-            license_key: String::new(),
             group_key_at: 0,
             own_proxy_at: 0,
             patch_declined: false,

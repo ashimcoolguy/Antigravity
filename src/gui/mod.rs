@@ -1,11 +1,10 @@
 //! The desktop GUI.
 //!
-//! Replaces the numbered console menu. Two screens: a licence gate, then one
-//! window of switches. Nothing here blocks — everything that touches the system
-//! goes to the `ops` worker and comes back as status snapshots and log lines.
+//! One window of switches. Nothing here blocks — everything that touches the
+//! system goes to the `ops` worker and comes back as status snapshots and log
+//! lines.
 
 mod icon;
-mod license;
 mod main_view;
 pub(crate) mod renderer;
 pub(crate) mod report;
@@ -22,8 +21,6 @@ use crate::settings::Settings;
 use crate::update::{self, ReleaseInfo};
 
 pub const TELEGRAM_GROUP_URL: &str = "https://t.me/nova_txt";
-/// The room the free keys are pinned in (spec item 9), not the group root.
-pub const TELEGRAM_KEYS_URL: &str = "https://t.me/nova_txt/69864";
 pub const DONATE_URL: &str = "https://nova-app.eu/donate";
 
 const WIN_W: f32 = 600.0;
@@ -33,27 +30,7 @@ const WIN_H: f32 = 840.0;
 /// Vec of every line a re-patch loop produced is a slow leak.
 const LOG_LIMIT: usize = 400;
 
-enum Screen {
-    License,
-    Main,
-}
-
 pub struct App {
-    screen: Screen,
-    key_input: String,
-    key_rejected: bool,
-    /// Cleared after the first frame gives the key field focus, so a paste needs
-    /// no click and Enter works straight away.
-    key_needs_focus: bool,
-    /// When the next licence check may run.
-    key_next_attempt: Option<std::time::Instant>,
-    /// Timestamps of recent checks, newest last. Only the last second matters.
-    key_attempts: Vec<std::time::Instant>,
-    /// Current cooldown between checks.
-    key_cooldown: std::time::Duration,
-
-    /// Raised once a newer release is on GitHub and never lowered — the banner
-    /// has to survive the move from the licence screen to the main one.
     update: Option<ReleaseInfo>,
     update_rx: Receiver<ReleaseInfo>,
 
@@ -133,20 +110,8 @@ impl App {
         // from here on — two writers each saving the whole thing meant whichever
         // saved last silently reverted the other.
         let settings = Settings::load();
-        let screen = first_screen(&settings);
-        // A debug build told to skip the key never passes the licence screen,
-        // which is where `Unlocked` is otherwise sent from.
-        if matches!(screen, Screen::Main) {
-            worker.send(Cmd::Unlocked);
-        }
+        worker.send(Cmd::Unlocked);
         Self {
-            screen,
-            key_input: String::new(),
-            key_rejected: false,
-            key_needs_focus: true,
-            key_next_attempt: None,
-            key_attempts: Vec::new(),
-            key_cooldown: std::time::Duration::from_millis(100),
             update: None,
             update_rx,
             worker,
@@ -178,8 +143,7 @@ impl App {
         self.busy.is_some()
     }
 
-    /// The "новая версия" button, drawn on both screens (spec item 10: it must
-    /// not disappear after the key is accepted).
+    /// The "новая версия" button.
     fn update_banner(&self, ui: &mut egui::Ui) {
         let Some(rel) = &self.update else { return };
         let label = format!("⬆  Доступна новая версия — {}", rel.display_version());
@@ -306,13 +270,10 @@ impl eframe::App for App {
             // everything anchored to the right edge — every switch, every pencil
             // — ends up clipped by exactly that much.
             ui.set_min_height(avail.y - MARGIN - BOTTOM);
-            match self.screen {
-                Screen::License => license::view(self, ui),
-                Screen::Main => main_view::view(self, ui),
-            }
+            main_view::view(self, ui);
         });
 
-        if matches!(self.screen, Screen::Main) {
+        {
             let ctx = ui.ctx().clone();
             main_view::path_dialog(self, &ctx);
         }
@@ -389,22 +350,6 @@ fn without_source_location(msg: &str) -> &str {
     msg.find(".rs:")
         .and_then(|i| msg[i..].find(": ").map(|j| &msg[i + j + 2..]))
         .unwrap_or(msg)
-}
-
-/// The licence screen, always - except in a *debug* build started with
-/// `AG_UNLOCKER_DEV_SKIP_KEY` set, so the main screen can be looked at while it
-/// is being worked on. Compiled out of every release build (`build_rust.py`
-/// builds release), so a shipped exe has no way past the key.
-fn first_screen(settings: &Settings) -> Screen {
-    #[cfg(debug_assertions)]
-    if std::env::var_os("AG_UNLOCKER_DEV_SKIP_KEY").is_some() {
-        return Screen::Main;
-    }
-    // A key accepted before and still good for this version: no screen.
-    if crate::auth::verify_key(&settings.license_key) {
-        return Screen::Main;
-    }
-    Screen::License
 }
 
 fn title() -> String {
