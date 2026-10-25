@@ -152,7 +152,7 @@ impl Default for Settings {
             dns: true,
             local_proxy: true,
             builtin_exits: true,
-            group_proxy: true,
+            group_proxy: false,
             debug_route: String::new(),
             disabled_providers: Vec::new(),
             custom_dns: String::new(),

@@ -1364,7 +1364,7 @@ fn enable_all(ctx: &mut Ctx) {
     // Nothing but a line in settings.json, so it needs nobody's permission.
     // The service they ride on is brought up below, with DNS.
     ctx.settings.builtin_exits = true;
-    ctx.settings.group_proxy = true;
+    ctx.settings.group_proxy = false;
     let dns_on =
         dns::is_nrpt_applied() && background::is_running() && !background::relay_is_outdated();
     if !dns_on {
