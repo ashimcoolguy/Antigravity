@@ -1,0 +1,126 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Windows binary
+        run: cargo build --release --bin ag_unlocker
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ag_unlocker-windows
+          path: target/release/ag_unlocker.exe
+
+  build-linux:
+    name: Build Linux (.tar.gz)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            python3-pil
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Linux binary
+        run: cargo build --release --bin ag_unlocker
+
+      - name: Package Linux Bundle
+        run: |
+          mkdir -p release/AG_linux
+          cp target/release/ag_unlocker release/AG_linux/
+          cp linux/launch.sh linux/install.sh linux/Antigravity-Unlocker.desktop linux/README.md release/AG_linux/
+          python3 -c "from PIL import Image; Image.open('icon.ico').convert('RGBA').save('release/AG_linux/icon.png')" 2>/dev/null || true
+          chmod +x release/AG_linux/ag_unlocker release/AG_linux/launch.sh release/AG_linux/install.sh
+          tar -czvf AG_linux.tar.gz -C release AG_linux
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ag_unlocker-linux
+          path: AG_linux.tar.gz
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ag_unlocker-windows
+          path: ./artifacts/windows
+
+      - name: Download Linux Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ag_unlocker-linux
+          path: ./artifacts/linux
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./artifacts/windows/ag_unlocker.exe
+            ./artifacts/linux/AG_linux.tar.gz
+          draft: false
+          prerelease: false

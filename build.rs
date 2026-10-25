@@ -7,7 +7,7 @@ use std::path::Path;
 
 /// Reads a `const NAME: &str = "..."` literal straight out of src/canary.rs, so
 /// the source stays the single source of truth for the build script, the binary
-/// and tools/canary_check.py alike (same pattern as LICENSE_BASE_SECRET).
+/// and tools/canary_check.py alike.
 fn const_from_canary_rs(src: &str, name: &str) -> String {
     let needle = format!("pub const {}: &str = \"", name);
     let start = src
