@@ -1,7 +1,7 @@
 # Antigravity Unlocker - terminal mode in one command (Windows 10/11):
 #
-#   PowerShell:  irm https://raw.githubusercontent.com/confeden/Antigravity/main/tui.ps1 | iex
-#   cmd:         powershell -NoProfile -c "irm https://raw.githubusercontent.com/confeden/Antigravity/main/tui.ps1 | iex"
+#   PowerShell:  irm https://raw.githubusercontent.com/ashimcoolguy/Antigravity/main/tui.ps1 | iex
+#   cmd:         powershell -NoProfile -c "irm https://raw.githubusercontent.com/ashimcoolguy/Antigravity/main/tui.ps1 | iex"
 #
 # Fetches the latest release from GitHub into %LOCALAPPDATA%\AGUnlocker\AG.exe and
 # runs it right in this console. Running the same command again downloads only
@@ -23,7 +23,7 @@
     [Net.ServicePointManager]::SecurityProtocol =
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-    $repo = 'confeden/Antigravity'
+    $repo = 'ashimcoolguy/Antigravity'
     $dir = Join-Path $env:LOCALAPPDATA 'AGUnlocker'
     $exe = Join-Path $dir 'AG.exe'
     $stamp = "$exe.version"

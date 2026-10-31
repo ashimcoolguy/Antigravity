@@ -1,14 +1,14 @@
 #!/bin/sh
 # Antigravity Unlocker — терминальный режим одной командой (Linux x86-64):
 #
-#   curl -fsSL https://raw.githubusercontent.com/confeden/Antigravity/main/tui.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ashimcoolguy/Antigravity/main/tui.sh | sh
 #
 # Берёт последний релиз с GitHub, кладёт программу в
 # ~/.local/share/agunlocker/ и запускает её в этом терминале. Повторный запуск
 # той же командой скачивает заново, только если вышла новая версия. Без root.
 set -eu
 
-REPO="confeden/Antigravity"
+REPO="ashimcoolguy/Antigravity"
 DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agunlocker"
 BIN="$DIR/ag_unlocker"
 
