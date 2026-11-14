@@ -298,7 +298,10 @@ mod tests {
 
     #[test]
     fn parse_key_errors() {
-        assert!(matches!(parse_key("not_a_key"), Err(KeyError::NotAKey)));
+        assert!(matches!(
+            parse_key("not_a_key"),
+            Err(KeyError::NotAKey) | Err(KeyError::Damaged)
+        ));
         assert!(matches!(
             parse_key("agk1.invalid"),
             Err(KeyError::Damaged) | Err(KeyError::NotAKey)

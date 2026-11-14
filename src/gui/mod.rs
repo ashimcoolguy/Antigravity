@@ -64,6 +64,9 @@ pub struct App {
     providers_local: Vec<crate::ops::ProviderRow>,
     /// True between picking a row up and the worker acknowledging the new order.
     providers_reordering: bool,
+    /// When «Добавить анлокер в исключения VPN» last copied the path: the
+    /// button says so for a few seconds.
+    vpn_path_copied: Option<std::time::Instant>,
     path_dialog: Option<String>,
     path_dialog_error: Option<String>,
     /// The report file the button last wrote, and when — for as long as the
@@ -122,6 +125,7 @@ impl App {
             custom_dns_input: settings.custom_dns.clone(),
             providers_local: Vec::new(),
             providers_reordering: false,
+            vpn_path_copied: None,
             path_dialog: None,
             path_dialog_error: None,
             report_saved: None,

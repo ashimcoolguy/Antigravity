@@ -4,6 +4,41 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+/// All writers (window, relay and standalone watchdog) share one transaction.
+/// A second watchdog must re-read the winner's patched file, not kill the LS
+/// to commit an obsolete copy it read before the first writer finished.
+#[cfg(windows)]
+struct PatchLock(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl PatchLock {
+    fn acquire(path: &Path) -> Result<Self, String> {
+        use sha2::{Digest, Sha256};
+        use windows_sys::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+        let absolute = fs::canonicalize(path).map_err(|e| e.to_string())?;
+        let id = hex::encode(Sha256::digest(absolute.to_string_lossy().to_lowercase().as_bytes()));
+        let name: Vec<_> = format!("Global\\AGUnlocker.Patch.{id}").encode_utf16().chain(Some(0)).collect();
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() { return Err(std::io::Error::last_os_error().to_string()); }
+        let waited = unsafe { WaitForSingleObject(handle, 15_000) };
+        if waited == 0 || waited == 0x80 { return Ok(Self(handle)); }
+        let error = if waited == 258 { "another patch writer is still busy".into() }
+            else { std::io::Error::last_os_error().to_string() };
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle); }
+        Err(error)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for PatchLock {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::Threading::ReleaseMutex(self.0);
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
 // Two edits are made to the native binaries, both same-length renames of a
 // string literal. Same length means offsets, relocations and the PE layout are
 // untouched, and the revert is byte-exact.
@@ -56,12 +91,29 @@ fn count_occurrences(data: &[u8], needle: &[u8]) -> usize {
 /// to launch. A running executable is locked on Windows, so the owning process is
 /// killed and the write retried only if the first attempt actually fails.
 fn write_binary(bin_path: &Path, data: &[u8]) -> Result<(), String> {
-    if write_atomic(bin_path, data).is_ok() {
-        return Ok(());
-    }
-    kill_holder(bin_path);
-    thread::sleep(Duration::from_millis(500));
-    write_atomic(bin_path, data).map_err(|e| e.to_string())
+    let res = match write_atomic(bin_path, data) {
+        Ok(()) => Ok(()),
+        Err(e) if matches!(e.raw_os_error(), Some(32 | 33)) => {
+            kill_holder(bin_path);
+            thread::sleep(Duration::from_millis(500));
+            write_atomic(bin_path, data).map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    // macOS: a bundle changed under a quarantine flag is "damaged" to
+    // Gatekeeper on its first launch, so the flag goes with the patch; a
+    // refused write into a bundle says which switch macOS wants.
+    #[cfg(target_os = "macos")]
+    let res = match res {
+        Ok(()) => {
+            if let Some(app) = crate::macos::bundle_of(bin_path) {
+                crate::macos::strip_quarantine(&app);
+            }
+            Ok(())
+        }
+        Err(e) => Err(crate::macos::app_management_hint(bin_path, &e)),
+    };
+    res
 }
 
 /// Kills whatever process holds `bin_path` open so the write can be retried.
@@ -96,6 +148,64 @@ pub fn kill_holder(bin_path: &Path) {
             .status()
             .ok();
     }
+}
+
+/// The Antigravity app that owns a language server: the first directory above
+/// `target` (at most six levels) holding the Desktop or IDE executable. `None`
+/// for a CLI `agy` and anything else with no app around it.
+///
+/// Killing the server alone does not release the file for long: the app starts
+/// it again within two seconds, the new process takes the lock, and after three
+/// such restarts it stops trying and is left open with no server at all (seen
+/// 2026-11-11 on the 2.31.1 update, G92). Closing the app is what makes the
+/// release stick.
+pub fn owner_app(target: &Path) -> Option<PathBuf> {
+    const APPS: [&str; 2] = ["Antigravity.exe", "Antigravity IDE.exe"];
+    target
+        .ancestors()
+        .skip(1)
+        .take(6)
+        .find_map(|dir| APPS.iter().map(|n| dir.join(n)).find(|p| p.is_file()))
+}
+
+/// Closes the app and everything it started. Windows only; elsewhere the
+/// server kill is all there is.
+#[cfg(target_os = "windows")]
+pub fn quit_app(app: &Path) {
+    let name = app
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/F", "/T", "/IM", &name])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    crate::utils::no_window(&mut cmd).output().ok();
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn quit_app(_app: &Path) {}
+
+/// Starts the app again, detached from whoever asks (the watchdog's task).
+#[cfg(target_os = "windows")]
+pub fn launch_app(app: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    Command::new(app)
+        .current_dir(app.parent().unwrap_or(Path::new(".")))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn launch_app(_app: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Where a patched copy of `target` is written before it is renamed over it.
@@ -173,6 +283,19 @@ fn write_atomic(bin_path: &Path, data: &[u8]) -> std::io::Result<()> {
             .unwrap_or(0o755);
         let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(mode));
     }
+    // macOS: the edited Mach-O no longer matches its signature and Apple
+    // Silicon would kill it at exec. The temp is re-signed before the rename,
+    // so the name never points at a binary the kernel refuses (S80). The
+    // rename also gives it a fresh vnode - an in-place write would keep the
+    // kernel's cached signature of the old one.
+    #[cfg(target_os = "macos")]
+    if crate::macos::is_macho(data) {
+        if let Err(e) = crate::macos::resign(&tmp) {
+            let _ = fs::remove_file(&tmp);
+            return Err(std::io::Error::other(e));
+        }
+        crate::macos::strip_quarantine(&tmp);
+    }
     match fs::rename(&tmp, bin_path) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -206,6 +329,8 @@ pub(crate) fn proxy_var_original() -> [u8; 11] {
 }
 
 fn rewrite(bin_path: &Path, from: &[u8], to: &[u8]) -> Result<usize, String> {
+    #[cfg(windows)]
+    let _transaction = PatchLock::acquire(bin_path)?;
     let mut data = fs::read(bin_path).map_err(|e| e.to_string())?;
     let replaced = replace_all(&mut data, from, to);
     if replaced == 0 {
@@ -297,7 +422,7 @@ pub fn unpatch_proxy_var(bin_path: &Path) -> Result<usize, String> {
 }
 
 /// What re-patching one binary found. The background watchdog needs to tell
-/// these four apart where menu 1 only needs success/failure:
+/// these outcomes apart where menu 1 only needs success/failure:
 ///
 /// - `SignatureMissing` is deliberately distinct from `Failed`. A signature
 ///   that is simply gone means a new or broken build this patcher does not
@@ -315,6 +440,8 @@ pub enum RepatchOutcome {
     SignatureMissing,
     /// A transient failure, usually a file locked mid-update. Retry later.
     Failed(String),
+    /// An additive edit is locked; retry without ever killing a working LS.
+    Deferred(String),
 }
 
 /// Re-applies the rename to a binary that may have been reverted by an update.
@@ -326,6 +453,24 @@ pub enum RepatchOutcome {
 /// the same step - which is what enforces "no unpatched server keeps running"
 /// without ever touching the editor shell.
 pub fn repatch_if_needed(bin_path: &Path) -> RepatchOutcome {
+    repatch_with(bin_path, true)
+}
+
+#[cfg(windows)]
+pub(crate) fn repatch_before_launch(bin_path: &Path) -> RepatchOutcome {
+    repatch_with(bin_path, false)
+}
+
+fn repatch_with(bin_path: &Path, kill_locked: bool) -> RepatchOutcome {
+    #[cfg(windows)]
+    if crate::watchdog::updater_busy(&crate::watchdog::updater_dirs()) {
+        return RepatchOutcome::Deferred("Antigravity update is still running".into());
+    }
+    #[cfg(windows)]
+    let _transaction = match PatchLock::acquire(bin_path) {
+        Ok(lock) => lock,
+        Err(e) => return RepatchOutcome::Failed(e),
+    };
     let (from, to) = field_signatures();
     let proxy_from = proxy_var_original();
     let mut data = match fs::read(bin_path) {
@@ -351,11 +496,15 @@ pub fn repatch_if_needed(bin_path: &Path) -> RepatchOutcome {
         // yet. Killing a running language server mid-session for that is a worse
         // outcome than waiting; the file settles and the next poll retries.
         if proxy > 0 {
-            let _ = write_atomic(bin_path, &data);
+            if let Err(e) = write_atomic(bin_path, &data) {
+                return RepatchOutcome::Deferred(e.to_string());
+            }
         }
         return RepatchOutcome::AlreadyPatched;
     }
-    match write_binary(bin_path, &data) {
+    let written = if kill_locked { write_binary(bin_path, &data) }
+        else { write_atomic(bin_path, &data).map_err(|e| e.to_string()) };
+    match written {
         Ok(()) => RepatchOutcome::Repatched(replaced),
         Err(e) => RepatchOutcome::Failed(e),
     }
@@ -371,9 +520,13 @@ pub fn repatch_if_needed(bin_path: &Path) -> RepatchOutcome {
 /// `language_server*` file - whatever the exact suffix, the signature scan then
 /// decides whether it is really a target.
 pub fn binary_targets(inst: &Path) -> Vec<PathBuf> {
-    let resources_bin = inst.join("resources").join("bin");
-    let ext_bin = inst
-        .join("resources")
+    // A macOS bundle spells it `Contents/Resources`.
+    #[cfg(target_os = "macos")]
+    let resources = crate::macos::resources_dir(inst);
+    #[cfg(not(target_os = "macos"))]
+    let resources = inst.join("resources");
+    let resources_bin = resources.join("bin");
+    let ext_bin = resources
         .join("app")
         .join("extensions")
         .join("antigravity")
@@ -414,8 +567,7 @@ pub fn binary_targets(inst: &Path) -> Vec<PathBuf> {
     // IDE 2.6.0 carries no language server of its own: its `agy` extension
     // downloads the backend into the user's `~/.gemini/bin`. That file is the
     // IDE's, so the IDE's row reads and patches it (G85).
-    if inst
-        .join("resources")
+    if resources
         .join("app")
         .join("extensions")
         .join("agy")
@@ -736,6 +888,40 @@ pub fn inspect_install(install: &std::path::Path) -> InstallState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn competing_writers_wait_then_read_the_committed_patch() {
+        let path = std::env::temp_dir().join(format!("ag_patch_transaction_{}.bin", std::process::id()));
+        fs::write(&path, b"..ineligible..https_proxy..").unwrap();
+        let lock = PatchLock::acquire(&path).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let other = path.clone();
+        let worker = std::thread::spawn(move || { tx.send(repatch_before_launch(&other)).unwrap(); });
+        assert!(matches!(rx.recv_timeout(Duration::from_millis(150)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+        assert_eq!(fs::read(&path).unwrap(), b"..ineligible..https_proxy..");
+        drop(lock);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), RepatchOutcome::Repatched(1));
+        worker.join().unwrap();
+        assert_eq!(repatch_before_launch(&path), RepatchOutcome::AlreadyPatched);
+        assert_eq!(fs::read(&path).unwrap(), b"..inexigible..AG_LS_PROXY..");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_proxy_only_edit_is_deferred_and_retried() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let path = std::env::temp_dir().join(format!("ag_proxy_deferred_{}.bin", std::process::id()));
+        fs::write(&path, b"..inexigible..https_proxy..").unwrap();
+        let reader = fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+        assert!(matches!(repatch_if_needed(&path), RepatchOutcome::Deferred(_)));
+        assert_eq!(fs::read(&path).unwrap(), b"..inexigible..https_proxy..");
+        drop(reader);
+        assert_eq!(repatch_if_needed(&path), RepatchOutcome::AlreadyPatched);
+        assert_eq!(fs::read(&path).unwrap(), b"..inexigible..AG_LS_PROXY..");
+        fs::remove_file(path).unwrap();
+    }
 
     /// What this machine's installs look like right now, read-only.
     ///
@@ -1178,4 +1364,30 @@ pub fn unpatch_all_binaries(inst: &Path) -> Vec<(String, Result<usize, String>)>
         results.push((label, unpatch_binary(&bin)));
     }
     results
+}
+
+#[cfg(test)]
+mod owner_app_tests {
+    use super::*;
+
+    #[test]
+    fn a_server_inside_an_install_has_the_install_s_app_and_a_lone_agy_has_none() {
+        let root = std::env::temp_dir().join(format!("ag_owner_{}", std::process::id()));
+        let bin = root.join("resources").join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let ls = bin.join("language_server.exe");
+        fs::write(&ls, b"x").unwrap();
+        assert_eq!(owner_app(&ls), None, "no app beside it yet");
+        let app = root.join("Antigravity.exe");
+        fs::write(&app, b"x").unwrap();
+        assert_eq!(owner_app(&ls), Some(app));
+
+        let lone = std::env::temp_dir().join(format!("ag_lone_{}", std::process::id()));
+        fs::create_dir_all(&lone).unwrap();
+        let agy = lone.join("agy.exe");
+        fs::write(&agy, b"x").unwrap();
+        assert_eq!(owner_app(&agy), None);
+        fs::remove_dir_all(&root).ok();
+        fs::remove_dir_all(&lone).ok();
+    }
 }

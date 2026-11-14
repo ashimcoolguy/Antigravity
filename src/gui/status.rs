@@ -231,7 +231,10 @@ impl Facts {
             net_ok: gate.net_ok,
             relay_exe: relay.map(|r| r.exe.clone()).unwrap_or_default(),
             verify: gate.verify.as_ref().map(|v| (aged(v.ago), v.url.clone())),
-            overloaded: gate.overloaded.as_ref().map(|o| (aged(o.ago), o.model.clone())),
+            overloaded: gate
+                .overloaded
+                .as_ref()
+                .map(|o| (aged(o.ago), o.model.clone())),
             unauthorized: gate.unauthorized.map(|u| (aged(u.ago), u.count)),
         }
     }
@@ -244,6 +247,12 @@ fn blocker(relay: Option<&crate::gate::Report>, what: &str) -> Option<crate::gat
 /// A provider's name as it is shown: an acronym stays one, anything else gets
 /// one capital.
 pub fn provider_name(name: &str) -> String {
+    // The two the pool carries are written the way their owners write them.
+    match name {
+        "dns-ai.ru" => return "DNS-AI.ru".to_string(),
+        "eu.geohide.ru" => return "eu.GeoHide.ru".to_string(),
+        _ => {}
+    }
     let lead: String = name.chars().take_while(|c| c.is_alphabetic()).collect();
     if lead.eq_ignore_ascii_case("dns") {
         return name.to_uppercase();
@@ -283,12 +292,6 @@ pub fn switch_text(cap: Cap) -> (&'static str, &'static str) {
             "Соединения Antigravity с этими двумя серверами идут через посредника внутри \
              вашего компьютера: он выбирает путь, который реально работает, и переключается \
              сам. Содержимое не расшифровывается — посредник только передаёт байты.",
-        ),
-        Cap::BuiltinExits => (
-            "Встроенные выходы",
-            // Deliberately says what they are and never which they are: a
-            // free service that gets named publicly stops being free (I46).
-            "Запасной путь до серверов Google — через страну без ограничений.",
         ),
         Cap::GroupProxy => (
             "Прокси из группы",
@@ -378,8 +381,9 @@ fn blocked(b: &crate::gate::Blocker, exe: &str) -> Headline {
             format!("Порт {port} недоступен"),
             format!(
                 "Служба обхода не может открыть порт {port} ({}), поэтому {effect}. Нажмите \
-                 «Починить»; не помогло — «Сохранить отчёт» и пришлите файл с рабочего стола в группу.",
-                b.error
+                 «Починить»; не помогло — {}",
+                b.error,
+                super::report::when_stuck()
             ),
         ),
     };
@@ -477,9 +481,7 @@ pub fn headline(f: &Facts) -> Headline {
     }
     // A refusal newer than the 503 is the news; the 503 was an earlier turn.
     let overloaded = f.overloaded.as_ref().filter(|(ago, _)| {
-        *ago <= crate::gate::RECENT
-            && unanswered(*ago)
-            && f.refusal.is_none_or(|(r, _)| r > *ago)
+        *ago <= crate::gate::RECENT && unanswered(*ago) && f.refusal.is_none_or(|(r, _)| r > *ago)
     });
     if let Some((ago, model)) = overloaded {
         let which = if model.is_empty() {
@@ -625,9 +627,9 @@ pub fn headline(f: &Facts) -> Headline {
                 detail: format!(
                     "Последняя — {}. Обход перебирает пути сам, но ни один пока не сработал. \
                      Если у вас включён VPN или прокси, попробуйте выключить его или сменить сервер, \
-                     и отправьте сообщение ещё раз. Не помогло — нажмите «Сохранить отчёт» и \
-                     пришлите файл с рабочего стола в группу.",
-                    ago_text(ago)
+                     и отправьте сообщение ещё раз. Не помогло — {}",
+                    ago_text(ago),
+                    super::report::when_stuck()
                 ),
                 action: None,
             };
@@ -862,7 +864,12 @@ mod tests {
         };
         let h = headline(&f);
         assert_eq!(h.tone, Tone::Action);
-        assert!(h.detail.contains("Сохранить отчёт"), "{}", h.detail);
+        assert_eq!(
+            h.detail.contains("Сохранить отчёт"),
+            super::super::report::ENABLED,
+            "{}",
+            h.detail
+        );
     }
 
     #[test]
@@ -963,9 +970,10 @@ mod tests {
 
     #[test]
     fn an_acronym_stays_an_acronym_and_everything_else_gets_one_capital() {
-        assert_eq!(provider_name("dns-ai.ru"), "DNS-AI.RU");
-        assert_eq!(provider_name("comss.one"), "Comss.one");
-        assert_eq!(provider_name("geohide.ru"), "Geohide.ru");
+        assert_eq!(provider_name("dns-ai.ru"), "DNS-AI.ru");
+        assert_eq!(provider_name("eu.geohide.ru"), "eu.GeoHide.ru");
+        assert_eq!(provider_name("свой DNS"), "Свой DNS");
+        assert_eq!(provider_name("dns.example"), "DNS.EXAMPLE");
         // Must not panic on a name the pool could grow later.
         assert_eq!(provider_name(""), "");
         assert_eq!(provider_name("1.1.1.1"), "1.1.1.1");

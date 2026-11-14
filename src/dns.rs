@@ -52,9 +52,17 @@ const AG_NRPT_LEGACY_TAGS: &[&str] = &["AG_UNLOCKER_NRPT"];
 // a foreign rule on either name is left alone (so is a subtree rule, I44).
 // Everything else Antigravity talks to - oauth2/www/play/accounts and
 // jetski-webchannel - works on real Google and is deliberately not listed.
+//
+// `aicode` (2026-11-06, owner) is here for a different reason than the other
+// two: not because a provider substitutes it (only geohide was measured doing
+// so), but because it carries the voice session and the relay's loopback
+// answer is the only door a running client takes to the route table. A rule
+// is what sends its lookup to the relay at all; with the door down it is
+// answered from the pool like the rest, so it costs a passthrough at worst.
 const AG_NRPT_CORE: &[&str] = &[
     "cloudcode-pa.googleapis.com",
     "daily-cloudcode-pa.googleapis.com",
+    "aicode.googleapis.com",
 ];
 
 /// The names an NRPT rule always points at the relay - and therefore the ones
@@ -948,10 +956,13 @@ mod tests {
 
     #[test]
     fn without_the_relay_ipv6_is_listed_and_loopback_is_not() {
-        let servers = assemble_nameservers(false, &["45.155.204.190"]);
+        let servers = assemble_nameservers(false, &["31.25.239.132"]);
         assert!(!servers.iter().any(|s| s == dns_forwarder::LISTEN_IP));
-        assert!(
+        // Whatever v6 resolvers the pool has belong in the no-relay list (since
+        // 2.31.0 it has none: eu.geohide.ru is IPv4 only).
+        assert_eq!(
             servers.iter().any(|s| s.contains(':')),
+            !resolvers::all_v6().is_empty(),
             "v6 resolvers belong in the no-relay list: {:?}",
             servers
         );

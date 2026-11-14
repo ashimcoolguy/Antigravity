@@ -49,7 +49,16 @@ pub fn requested() -> bool {
 }
 
 /// Linux: a terminal and nothing to draw a window into — a server over SSH.
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn only_terminal() -> bool {
+    use std::io::IsTerminal;
+    // No DISPLAY on a Mac: the window server is always there, unless this is
+    // a shell reached over SSH.
+    (std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some())
+        && std::io::stdin().is_terminal()
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub fn only_terminal() -> bool {
     use std::io::IsTerminal;
     std::env::var_os("DISPLAY").is_none()
@@ -297,12 +306,13 @@ impl App {
         let text = text.trim();
         if let Some(Input::Path { text: t, .. }
             | Input::OwnProxy { text: t }
-            | Input::CustomDns { text: t }) =
-            &mut self.input
+            | Input::CustomDns { text: t },
+        ) = &mut self.input
         {
             t.push_str(text);
         }
     }
+
 
     fn on_input_key(&mut self, k: KeyEvent, ctrl: bool) {
         let Some(input) = &mut self.input else { return };
@@ -410,7 +420,7 @@ impl App {
             KeyCode::Char('a') => self.act_if_offered(Action::EnableAll),
             KeyCode::Char('r') => self.act_if_offered(Action::Repair),
             KeyCode::Char('v') => self.act_if_offered(Action::Verify),
-            KeyCode::Char('o') => self.save_report(),
+            KeyCode::Char('o') if crate::gui::report::ENABLED => self.save_report(),
             KeyCode::Char('x') | KeyCode::Delete => {
                 if let Some(Row::Install(i)) = row {
                     self.forget_install(i);
@@ -476,10 +486,15 @@ impl App {
                     return;
                 }
                 if let Some(p) = self.status.as_ref().and_then(|s| s.providers.get(i)) {
+                    if !p.available {
+                        self.toast("Свой DNS не задан — добавьте сервер в поле ниже.");
+                        return;
+                    }
                     self.worker
                         .send(Cmd::SetProvider(p.name.clone(), !p.enabled));
                 }
             }
+
             Row::OwnProxyText => {
                 self.input = Some(Input::OwnProxy {
                     text: self.own_proxy_text(),
@@ -523,7 +538,9 @@ impl App {
             Action::Verify => {
                 if let Some((_, url)) = self.facts().and_then(|f| f.verify) {
                     crate::utils::open_url_as_user(&url);
-                    self.toast(format!("Если браузер не открылся, откройте ссылку вручную: {url}"));
+                    self.toast(format!(
+                        "Если браузер не открылся, откройте ссылку вручную: {url}"
+                    ));
                 }
             }
         }
@@ -640,11 +657,13 @@ impl App {
             }
             rows.push(Row::CustomDnsText);
             rows.push(Row::Cap(Cap::LocalProxy));
-            rows.push(Row::Cap(Cap::BuiltinExits));
+            // rows.push(Row::Cap(Cap::GroupProxy));
             rows.push(Row::Cap(Cap::OwnProxy));
             rows.push(Row::OwnProxyText);
         }
-        rows.push(Row::Report);
+        if crate::gui::report::ENABLED {
+            rows.push(Row::Report);
+        }
         rows
     }
 
@@ -672,7 +691,7 @@ impl App {
             }
             Row::Advanced => "Детали обхода: DNS-серверы, прокси, выходы.".into(),
             Row::Provider(_) => "Пробел — включить или выключить сервер, +/- — выше или ниже в списке.".into(),
-            Row::CustomDnsText => "Enter — задать свой DNS: IPv4-адреса через пробел.".into(),
+            Row::CustomDnsText => "Enter — задать свой DNS: IPv4, https://… (DoH) или tls://… (DoT) через пробел.".into(),
             Row::OwnProxyText => {
                 "Enter — изменить адрес: логин:пароль@адрес:порт (или адрес:порт без пароля).".into()
             }
@@ -759,6 +778,7 @@ impl App {
                 let name = format!("{}. {}", i + 1, status::provider_name(&p.name));
                 switch_line("      ", &name, &state, busy, width)
             }
+
             Row::CustomDnsText => {
                 let text = self.custom_dns_text();
                 let shown = if text.is_empty() {
@@ -967,7 +987,12 @@ impl App {
             Some(Action::Verify) => " · v — пройти верификацию",
             _ => "",
         };
-        let keys = format!("↑↓ выбор · Пробел/Enter — вкл/выкл{offered} · o — отчёт · q — выход");
+        let report = if crate::gui::report::ENABLED {
+            " · o — отчёт"
+        } else {
+            ""
+        };
+        let keys = format!("↑↓ выбор · Пробел/Enter — вкл/выкл{offered}{report} · q — выход");
         f.render_widget(
             Paragraph::new(keys).style(Style::new().fg(Color::DarkGray)),
             area,

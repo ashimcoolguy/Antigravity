@@ -44,6 +44,14 @@ use std::time::Duration;
 /// preconditions too, and only this one is about where the request came from.
 const REGION_400: &str = "user location is not supported";
 
+/// The same refusal as it comes back from the sign-in call: `onboardUser` answers
+/// `403 PERMISSION_DENIED` with `reason: UNSUPPORTED_LOCATION` (Â«account is not
+/// currently available in your locationÂ»), not the 400 above - seen 2026-11-11
+/// on a fresh login through the group route, where the relay read nothing and
+/// kept the route that had just been refused. The JSON form is matched, once per
+/// refusal: the same word is repeated in the `API Error:` line after it.
+const REGION_403: &str = "\"reason\": \"unsupported_location\"";
+
 /// A model answer, as the language server logs it: the generation call and the
 /// id of the response it got back, on one line. Both halves: `loadCodeAssist`
 /// and `fetchAvailableModels` are logged the same way on a refused session too,
@@ -357,7 +365,13 @@ fn contains_ci(hay: &[u8], needle: &[u8]) -> bool {
 /// because the log is a stream of glog lines that a partial last line may cut
 /// anywhere, and a UTF-8 boundary is not something worth failing on.
 fn count_refusals(buf: &[u8]) -> usize {
-    let needle = REGION_400.as_bytes();
+    [REGION_400, REGION_403]
+        .iter()
+        .map(|n| count_needle(buf, n.as_bytes()))
+        .sum()
+}
+
+fn count_needle(buf: &[u8], needle: &[u8]) -> usize {
     if buf.len() < needle.len() {
         return 0;
     }
@@ -375,7 +389,8 @@ fn count_refusals(buf: &[u8]) -> usize {
 /// matched by prefix rather than listed, so a rebranded build is picked up too.
 /// The CLI (`agy`) writes `~\.gemini\antigravity-cli\log\cli-<stamp>.log`, one
 /// per session, in the same glog format - found 2026-09-18, and watched from
-/// 2.14.0_1 on (before that "CLI log location unknown").
+/// 2.14.0_1 on (before that "CLI log location unknown"). The VS Code
+/// extension's backend writes the same files under `~\.geminintigravity\log`.
 /// Public because the window holds the list rather than rebuilding it: this
 /// walks `%APPDATA%` and then the IDE's `logs` folder, which has one sub-folder
 /// per launch, and a window ticking every three seconds must not do that.
@@ -410,18 +425,28 @@ pub fn candidate_logs() -> Vec<PathBuf> {
             }
         }
     }
-    if let Some(cli) = newest_cli_log() {
-        out.push(cli);
+    for app_dir in CLI_APP_DIRS {
+        if let Some(cli) = newest_cli_log(app_dir) {
+            out.push(cli);
+        }
     }
     out
 }
 
-/// The CLI's current session log: the newest `cli-*.log`.
-fn newest_cli_log() -> Option<PathBuf> {
+/// `~/.gemini/<dir>/log` folders the `agy` backend writes `cli-<stamp>.log` to.
+/// `antigravity-cli` is the CLI's own; `antigravity` is the backend the VS Code
+/// extension (and IDE 2.6.0) downloads to `~/.gemini/bin` and starts as
+/// `agy --hub --app_data_dir=antigravity` - measured 2026-11-07: its model
+/// answers (`streamGenerateContent … ResponseID:`) and region refusals land
+/// there, in the same glog format, and nowhere else.
+const CLI_APP_DIRS: [&str; 2] = ["antigravity-cli", "antigravity"];
+
+/// One backend's current session log: the newest `cli-*.log` in its folder.
+fn newest_cli_log(app_dir: &str) -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     let dir = PathBuf::from(home)
         .join(".gemini")
-        .join("antigravity-cli")
+        .join(app_dir)
         .join("log");
     fs::read_dir(dir)
         .ok()?
@@ -460,7 +485,13 @@ fn profile_root() -> Option<PathBuf> {
 
 /// Linux keeps the same layout under `~/.config`; nothing tails it there yet
 /// because the DNS layer it would steer is not ported, but the path is right.
-#[cfg(not(target_os = "windows"))]
+/// macOS: Electron keeps the profile under `~/Library/Application Support`.
+#[cfg(target_os = "macos")]
+fn profile_root() -> Option<PathBuf> {
+    Some(crate::macos::application_support())
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn profile_root() -> Option<PathBuf> {
     match std::env::var("XDG_CONFIG_HOME") {
         Ok(x) if !x.is_empty() => Some(PathBuf::from(x)),
@@ -1055,6 +1086,26 @@ mod tests {
             .open(path)
             .expect("open");
         f.write_all(text.as_bytes()).expect("write");
+    }
+
+    #[test]
+    fn the_sign_in_refusal_403_counts_as_a_region_refusal() {
+        let body = b"{
+  \"error\": {
+    \"code\": 403,
+    \"status\": \"PERMISSION_DENIED\",
+    \"details\": [
+      {
+        \"reason\": \"UNSUPPORTED_LOCATION\",
+        \"domain\": \"cloudaicompanion.googleapis.com\"
+      }
+    ]
+  }
+}
+API Error: {Reason:UNSUPPORTED_LOCATION}
+";
+        assert_eq!(count_refusals(body), 1);
+        assert_eq!(count_refusals(b"PERMISSION_DENIED (code 403): You do not have a valid license"), 0);
     }
 
     const REFUSAL: &str = "E0901 15:09:24.614939 1 stream_handler.go:101] FAILED_PRECONDITION (code 400): User location is not supported for the API use.\n";

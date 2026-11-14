@@ -87,7 +87,7 @@ struct CachedCheck {
 
 /// Returns the path to the update check cache file in the system temp directory.
 fn cache_path() -> PathBuf {
-    std::env::temp_dir().join("ag_unlocker_update_cache.json")
+    std::env::temp_dir().join("ag_unlocker_fork_update_cache.json")
 }
 
 /// Compares two version strings (e.g. "v2.11.0_4" vs "2.11.0_1", "2.11.0" vs "2.10.0").

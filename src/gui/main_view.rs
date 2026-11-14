@@ -146,62 +146,64 @@ fn status_card(app: &mut App, ui: &mut egui::Ui) {
                     pressed = Some(action);
                 }
             }
-            ui.add_space(10.0);
-            // The saved file is named on a line of its own, under the buttons.
-            // A report the size of these is pasted into a chat as a wall of
-            // text nobody reads and half of them arrive truncated, so the file
-            // *is* the deliverable and its name is what the user has to act on;
-            // the path is not shown, because «рабочий стол» plus «Показать» is
-            // what actually gets them to it.
-            let saved = app
-                .report_saved
-                .clone()
-                .filter(|(at, _)| at.elapsed() < REPORT_SHOWN_FOR);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!busy, egui::Button::new(egui::RichText::new("Сохранить отчёт").size(12.5)))
-                    .on_hover_text("Всё, что нужно, чтобы понять, почему Antigravity отвечает или нет — одним файлом на рабочем столе: приложите его к сообщению")
-                    .clicked()
-                {
-                    copy = true;
-                }
-                if let Some((_, path)) = &saved {
+            if super::report::ENABLED {
+                ui.add_space(10.0);
+                // The saved file is named on a line of its own, under the buttons.
+                // A report the size of these is pasted into a chat as a wall of
+                // text nobody reads and half of them arrive truncated, so the file
+                // *is* the deliverable and its name is what the user has to act on;
+                // the path is not shown, because «рабочий стол» plus «Показать» is
+                // what actually gets them to it.
+                let saved = app
+                    .report_saved
+                    .clone()
+                    .filter(|(at, _)| at.elapsed() < REPORT_SHOWN_FOR);
+                ui.horizontal(|ui| {
                     if ui
-                        .add(egui::Button::new(egui::RichText::new("Показать файл").size(12.5)))
-                        .on_hover_text("Открыть папку с отчётом")
+                        .add_enabled(!busy, egui::Button::new(egui::RichText::new("Сохранить отчёт").size(12.5)))
+                        .on_hover_text("Всё, что нужно, чтобы понять, почему Antigravity отвечает или нет — одним файлом на рабочем столе: приложите его к сообщению")
                         .clicked()
                     {
-                        reveal = Some(path.clone());
+                        copy = true;
                     }
+                    if let Some((_, path)) = &saved {
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("Показать файл").size(12.5)))
+                            .on_hover_text("Открыть папку с отчётом")
+                            .clicked()
+                        {
+                            reveal = Some(path.clone());
+                        }
+                    }
+                });
+                if let Some((_, path)) = &saved {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Отчёт сохранён на рабочий стол: «{}». Приложите этот файл к сообщению.",
+                            path.file_name()
+                                .map(|f| f.to_string_lossy().into_owned())
+                                .unwrap_or_default()
+                        ))
+                        .size(12.5)
+                        .color(theme::OK),
+                    );
+                    ui.ctx().request_repaint_after(Duration::from_millis(500));
                 }
-            });
-            if let Some((_, path)) = &saved {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Отчёт сохранён на рабочий стол: «{}». Приложите этот файл к сообщению.",
-                        path.file_name()
-                            .map(|f| f.to_string_lossy().into_owned())
-                            .unwrap_or_default()
-                    ))
-                    .size(12.5)
-                    .color(theme::OK),
-                );
-                ui.ctx().request_repaint_after(Duration::from_millis(500));
-            }
-            if app
-                .report_clipboard_at
-                .is_some_and(|at| at.elapsed() < REPORT_SHOWN_FOR)
-            {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Файл сохранить не удалось — отчёт скопирован, вставьте его в сообщение.",
-                    )
-                    .size(12.5)
-                    .color(theme::WARN),
-                );
-                ui.ctx().request_repaint_after(Duration::from_millis(500));
+                if app
+                    .report_clipboard_at
+                    .is_some_and(|at| at.elapsed() < REPORT_SHOWN_FOR)
+                {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Файл сохранить не удалось — отчёт скопирован, вставьте его в сообщение.",
+                        )
+                        .size(12.5)
+                        .color(theme::WARN),
+                    );
+                    ui.ctx().request_repaint_after(Duration::from_millis(500));
+                }
             }
         });
 
@@ -284,8 +286,7 @@ fn bypass_master(app: &mut App, ui: &mut egui::Ui) {
     let busy = app.is_busy();
     let flipped = widgets::switch_row(ui, &mut master, !busy, |ui| {
         let (title, hint) = status::BYPASS_TEXT;
-        ui.label(egui::RichText::new(title).size(14.0));
-        widgets::hint(ui, hint);
+        widgets::title_info(ui, title, hint);
     });
     if flipped {
         for cap in crate::ops::bypass_order(master) {
@@ -400,32 +401,86 @@ fn dev_open() -> bool {
 }
 
 fn advanced_card(app: &mut App, ui: &mut egui::Ui) {
-    egui::CollapsingHeader::new(
+    // On the main screen, not folded: with the explanations behind their «i»
+    // buttons there is room for it, and the user opens nothing to see what is
+    // switched on.
+    ui.label(
         egui::RichText::new("Настройки для опытных")
             .size(13.0)
             .color(theme::MUTED),
-    )
-    .id_salt("advanced")
-    .default_open(dev_open())
-    .show(ui, |ui| {
-        widgets::card(ui, |ui| {
-            network_facts(app, ui);
+    );
+    ui.add_space(6.0);
+    widgets::card(ui, |ui| {
+        network_facts(app, ui);
+        vpn_exclusion_button(app, ui);
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(8.0);
 
-            cap_row(app, ui, Cap::Dns);
-            providers_list(app, ui);
-            custom_dns_field(app, ui);
+        cap_row(app, ui, Cap::Dns);
+        providers_list(app, ui);
+        custom_dns_field(app, ui);
 
-            ui.add_space(10.0);
-            cap_row(app, ui, Cap::LocalProxy);
+        ui.add_space(10.0);
+        cap_row(app, ui, Cap::LocalProxy);
 
-            ui.add_space(10.0);
-            cap_row(app, ui, Cap::BuiltinExits);
-
-            ui.add_space(10.0);
-            cap_row(app, ui, Cap::OwnProxy);
-            own_proxy_field(app, ui);
-        });
+        ui.add_space(10.0);
+        cap_row(app, ui, Cap::OwnProxy);
+        own_proxy_field(app, ui);
     });
+}
+
+/// A small «i» that opens or closes the text kept under `key`. Returns whether
+/// the text is showing.
+fn info_toggle(ui: &mut egui::Ui, key: &str) -> bool {
+    let id = egui::Id::new(key);
+    let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if widgets::info_button(ui, open).clicked() {
+        open = !open;
+    }
+    ui.data_mut(|d| d.insert_temp(id, open));
+    open
+}
+
+fn info_open(ui: &egui::Ui, key: &str) -> bool {
+    ui.data(|d| d.get_temp::<bool>(egui::Id::new(key)))
+        .unwrap_or(false)
+}
+
+/// Copies the path of this program, for adding it to a VPN's list of exceptions.
+/// The VPN's own settings are not ours to write, so the button hands over the one
+/// thing they ask for.
+fn vpn_exclusion_button(app: &mut App, ui: &mut egui::Ui) {
+    let copied = app
+        .vpn_path_copied
+        .is_some_and(|at| at.elapsed() < Duration::from_secs(5));
+    let label = if copied {
+        "Путь до анлокера скопирован"
+    } else {
+        "Добавить анлокер в исключения VPN"
+    };
+    ui.horizontal(|ui| {
+        if ui
+            .add(egui::Button::new(egui::RichText::new(label).size(13.0)))
+            .clicked()
+        {
+            if let Ok(exe) = std::env::current_exe() {
+                crate::utils::set_clipboard_text(&exe.display().to_string());
+                app.vpn_path_copied = Some(std::time::Instant::now());
+            }
+        }
+        info_toggle(ui, "vpn-info");
+    });
+    if info_open(ui, "vpn-info") {
+        widgets::hint(
+            ui,
+            "Копирует путь к этой программе. Вставьте его в список исключений вашего VPN \
+             (раздельное туннелирование), чтобы её соединения шли мимо VPN.",
+        );
+    }
+    if copied {
+        ui.ctx().request_repaint_after(Duration::from_millis(500));
+    }
 }
 
 /// What the relay says about the network right now: the VPN, where it comes
@@ -490,8 +545,6 @@ fn providers_list(app: &mut App, ui: &mut egui::Ui) {
     if providers.is_empty() {
         return;
     }
-    let busy = app.is_busy();
-
     let mut flip: Option<(String, bool)> = None;
     // (from, to) — set the moment the pointer passes over another row, not on
     // release: the row has to follow the cursor while the button is still down.
@@ -504,14 +557,23 @@ fn providers_list(app: &mut App, ui: &mut egui::Ui) {
             .color(theme::MUTED),
     )
     .id_salt("providers")
-    .default_open(false)
+    .default_open(true)
     .show(ui, |ui| {
         let first_on = providers.iter().position(|p| p.enabled);
-        widgets::hint(
-            ui,
-            "Порядок можно менять: зажмите полоски слева и перетащите. \
-             Первый в списке спрашивается первым.",
-        );
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Порядок — перетаскиванием за «≡»")
+                    .size(12.0)
+                    .color(theme::MUTED),
+            );
+            info_toggle(ui, "providers-info");
+        });
+        if info_open(ui, "providers-info") {
+            widgets::hint(
+                ui,
+                "Зажмите полоски слева и перетащите. Первый в списке спрашивается первым.",
+            );
+        }
         ui.add_space(4.0);
 
         for (i, p) in providers.iter().enumerate() {
@@ -532,16 +594,25 @@ fn providers_list(app: &mut App, ui: &mut egui::Ui) {
                     .response
                     .on_hover_cursor(egui::CursorIcon::Grab);
 
+                    // Not tied to `busy`: a provider switch is a settings write
+                    // and answers at once, so it must not wait behind whatever
+                    // the worker is doing for another switch.
                     let mut on = p.enabled;
-                    if widgets::switch(ui, &mut on, dns_on && !busy).changed() {
+                    if widgets::switch(ui, &mut on, dns_on && p.available).changed() {
                         flip = Some((p.name.clone(), on));
                     }
                     // Without rotation only the first enabled one is ever asked,
                     // so the rest are drawn as what they are: on, but not in use.
                     let idle = !rotating && p.enabled && first_on != Some(i);
                     let text = egui::RichText::new(status::provider_name(&p.name)).size(13.0);
-                    ui.label(if idle { text.color(theme::MUTED) } else { text });
-                    if idle {
+                    ui.label(if idle || !p.available {
+                        text.color(theme::MUTED)
+                    } else {
+                        text
+                    });
+                    if !p.available {
+                        widgets::hint(ui, "— не задан");
+                    } else if idle {
                         widgets::hint(ui, "— не используется");
                     }
                 })
@@ -570,6 +641,11 @@ fn providers_list(app: &mut App, ui: &mut egui::Ui) {
     });
 
     if let Some((name, on)) = flip {
+        // The row flips under the pointer this frame; the worker's snapshot
+        // confirms (or, for the last provider, takes it back) a moment later.
+        if let Some(row) = app.providers_local.iter_mut().find(|r| r.name == name) {
+            row.enabled = on;
+        }
         app.worker.send(Cmd::SetProvider(name, on));
     }
     if let Some((from, to)) = moved {
@@ -600,19 +676,31 @@ fn providers_list(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+
 /// The user's own DNS server(s) for the bypass: joins the pool as one more provider.
 fn custom_dns_field(app: &mut App, ui: &mut egui::Ui) {
     let busy = app.is_busy();
     ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new("Свой DNS для обхода (IPv4 через пробел)")
-            .size(12.0)
-            .color(theme::MUTED),
-    );
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("Свой DNS: IPv4, DoH или DoT")
+                .size(12.0)
+                .color(theme::MUTED),
+        );
+        info_toggle(ui, "custom-dns-info");
+    });
+    if info_open(ui, "custom-dns-info") {
+        widgets::hint(
+            ui,
+            "Можно несколько, через пробел: обычный адрес 77.88.8.8, DoH — \
+             https://dns.example.com/dns-query, DoT — tls://dns.example.com. Пока поле пустое, \
+             этот сервер выключен.",
+        );
+    }
     ui.horizontal(|ui| {
         ui.add_space(10.0);
         let field = egui::TextEdit::singleline(&mut app.custom_dns_input)
-            .hint_text("например 77.88.8.8")
+            .hint_text("77.88.8.8 · https://… · tls://…")
             .desired_width(ui.available_width() - 110.0);
         let resp = ui.add_enabled(!busy, field);
         let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -664,8 +752,7 @@ fn cap_row(app: &mut App, ui: &mut egui::Ui, cap: Cap) {
 
     let note = state.note().map(|s| s.to_string());
     let flipped = widgets::switch_row(ui, &mut on, enabled, |ui| {
-        ui.label(egui::RichText::new(title).size(14.0));
-        widgets::hint(ui, hint);
+        widgets::title_info(ui, title, hint);
         if let Some(note) = note {
             ui.label(egui::RichText::new(note).size(12.0).color(if blocked {
                 theme::WARN
