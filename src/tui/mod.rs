@@ -115,6 +115,7 @@ enum Input {
     Path { text: String, error: Option<String> },
     OwnProxy { text: String },
     CustomDns { text: String },
+    GroupKey { text: String },
 }
 
 /// One selectable line of the main list.
@@ -269,6 +270,8 @@ impl App {
                 }
                 Event::Status(s) => self.status = Some(*s),
                 Event::Busy(what) => self.busy = what,
+                Event::ProxySaved(_, _) => {}
+                Event::Deactivated => self.busy = None,
             }
             any = true;
         }
@@ -306,7 +309,8 @@ impl App {
         let text = text.trim();
         if let Some(Input::Path { text: t, .. }
             | Input::OwnProxy { text: t }
-            | Input::CustomDns { text: t },
+            | Input::CustomDns { text: t }
+            | Input::GroupKey { text: t },
         ) = &mut self.input
         {
             t.push_str(text);
@@ -317,7 +321,10 @@ impl App {
     fn on_input_key(&mut self, k: KeyEvent, ctrl: bool) {
         let Some(input) = &mut self.input else { return };
         let text = match input {
-            Input::Path { text, .. } | Input::OwnProxy { text } | Input::CustomDns { text } => text,
+            Input::Path { text, .. }
+            | Input::OwnProxy { text }
+            | Input::CustomDns { text }
+            | Input::GroupKey { text } => text,
         };
         match k.code {
             KeyCode::Esc => self.input = None,
@@ -349,10 +356,19 @@ impl App {
                 }
             }
             Some(Input::OwnProxy { text }) => {
-                self.worker.send(Cmd::SetOwnProxy(text.trim().to_string()))
+                self.worker.send(Cmd::SetOwnProxy {
+                    text: text.trim().to_string(),
+                    enable: true,
+                })
             }
             Some(Input::CustomDns { text }) => {
                 self.worker.send(Cmd::SetCustomDns(text.trim().to_string()))
+            }
+            Some(Input::GroupKey { text }) => {
+                let key = text.trim().to_string();
+                if !key.is_empty() {
+                    self.worker.send(Cmd::SetGroupKey { text: key, enable: true });
+                }
             }
             None => {}
         }
@@ -459,10 +475,20 @@ impl App {
                     self.toast(format!("Не включается: {why}"));
                     return;
                 }
-                if cap == Cap::OwnProxy && !state.is_on() && self.own_proxy_text().is_empty() {
+                if cap == Cap::OwnProxy
+                    && !state.is_on()
+                    && !self.status.as_ref().is_some_and(|s| s.own_proxy_configured)
+                {
                     self.input = Some(Input::OwnProxy {
                         text: String::new(),
                     });
+                    return;
+                }
+                if cap == Cap::GroupProxy
+                    && !state.is_on()
+                    && !self.status.as_ref().is_some_and(|s| s.group_proxy_configured)
+                {
+                    self.input = Some(Input::GroupKey { text: String::new() });
                     return;
                 }
                 self.worker.send(Cmd::Set(cap, !state.is_on()));
@@ -472,7 +498,8 @@ impl App {
                     return;
                 }
                 let on = !self.status.as_ref().is_some_and(|s| s.bypass_on());
-                for cap in ops::bypass_order(on) {
+                let group_configured = self.status.as_ref().is_some_and(|s| s.group_proxy_configured);
+                for cap in ops::bypass_order(on, group_configured) {
                     self.worker.send(Cmd::Set(cap, on));
                 }
             }
@@ -497,7 +524,7 @@ impl App {
 
             Row::OwnProxyText => {
                 self.input = Some(Input::OwnProxy {
-                    text: self.own_proxy_text(),
+                    text: crate::settings::Settings::load().own_proxy,
                 })
             }
             Row::CustomDnsText => {
@@ -691,6 +718,7 @@ impl App {
             }
             Row::Advanced => "Детали обхода: DNS-серверы, прокси, выходы.".into(),
             Row::Provider(_) => "Пробел — включить или выключить сервер, +/- — выше или ниже в списке.".into(),
+
             Row::CustomDnsText => "Enter — задать свой DNS: IPv4, https://… (DoH) или tls://… (DoT) через пробел.".into(),
             Row::OwnProxyText => {
                 "Enter — изменить адрес: логин:пароль@адрес:порт (или адрес:порт без пароля).".into()
@@ -859,10 +887,17 @@ impl App {
             None => 3,
         }
         .min(area.height / 3);
+        let vpn_h = if facts.as_ref().is_some_and(|f| f.relay_uses_vpn) {
+            wrapped_height(status::VPN_TRAFFIC_NOTICE, area.width)
+        } else {
+            0
+        };
         let log_h = if area.height >= 32 { 9 } else { 6 };
-        let [top, card, list, hint, journal, keys] = Layout::vertical([
+        let log_h = log_h.min(area.height.saturating_sub(8 + card_h + vpn_h));
+        let [top, card, vpn, list, hint, journal, keys] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(card_h),
+            Constraint::Length(vpn_h),
             Constraint::Min(4),
             Constraint::Length(2),
             Constraint::Length(log_h),
@@ -872,6 +907,14 @@ impl App {
 
         f.render_widget(Paragraph::new(self.title_line()), top);
         self.draw_card(f, card, headline.as_ref());
+        if vpn_h != 0 {
+            f.render_widget(
+                Paragraph::new(status::VPN_TRAFFIC_NOTICE)
+                    .style(Style::new().fg(Color::Yellow))
+                    .wrap(Wrap { trim: true }),
+                vpn,
+            );
+        }
 
         let rows = self.rows();
         let (at, _) = self.cursor(&rows);
@@ -1021,6 +1064,12 @@ impl App {
                 text,
                 None,
             ),
+            Some(Input::GroupKey { text }) => (
+                " Ключ группового прокси ",
+                "Буфер обмена недоступен или пуст. Вставьте ключ сюда (Ctrl+Shift+V или правая кнопка мыши в терминале) или наберите его.",
+                text,
+                None,
+            ),
             None => return,
         };
         let w = area.width.saturating_sub(8).min(90);
@@ -1032,12 +1081,19 @@ impl App {
             width: w,
             height: h,
         };
+        let shown = match &self.input {
+            Some(Input::OwnProxy { .. }) => match text.rsplit_once('@') {
+                Some((_, address)) => format!("••••@{address}"),
+                None => text.clone(),
+            },
+            _ => text.clone(),
+        };
         let mut lines = vec![
             Line::styled(hint, Style::new().fg(Color::Gray)),
             Line::raw(""),
             Line::from(vec![
                 Span::raw("› "),
-                Span::raw(text.clone()),
+                Span::raw(shown),
                 Span::styled("▏", Style::new().fg(Color::Cyan)),
             ]),
         ];
@@ -1133,10 +1189,14 @@ fn copy_out(text: &str) -> Copied {
     if crate::utils::set_clipboard_text(text) {
         return Copied::Clipboard;
     }
-    let mut out = std::io::stdout();
-    let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
-    let _ = out.flush();
+    let _ = copy_to_terminal(text);
     Copied::Terminal
+}
+
+fn copy_to_terminal(text: &str) -> std::io::Result<()> {
+    let mut out = std::io::stdout().lock();
+    write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+    out.flush()
 }
 
 fn base64(data: &[u8]) -> String {

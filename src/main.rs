@@ -21,6 +21,8 @@ mod asar;
 mod background;
 mod canary;
 mod dns;
+mod deactivate;
+mod sidecar;
 mod dns_client;
 mod dns_forwarder;
 mod dns_route;

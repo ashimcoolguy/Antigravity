@@ -23,13 +23,17 @@ use crate::update::{self, ReleaseInfo};
 pub const TELEGRAM_GROUP_URL: &str = "https://t.me/nova_txt";
 pub const FORK_URL: &str = "https://github.com/ashimcoolguy/Antigravity";
 
-const WIN_W: f32 = 600.0;
-const WIN_H: f32 = 840.0;
+const WIN_W: f32 = 940.0;
+const WIN_H: f32 = 650.0;
 
 /// How many log lines are kept. The window can stay open for days; an unbounded
 /// Vec of every line a re-patch loop produced is a slow leak.
 const LOG_LIMIT: usize = 400;
 
+enum Screen {
+    Main,
+    Deactivated,
+}
 pub struct App {
     update: Option<ReleaseInfo>,
     update_rx: Receiver<ReleaseInfo>,
@@ -52,9 +56,11 @@ pub struct App {
     /// galley and the journal is one label per line.
     log_all_selected: bool,
     busy: Option<String>,
+    main_view: main_view::ViewState,
 
     own_proxy_input: String,
     custom_dns_input: String,
+    screen: Screen,
     /// The provider list as the window is drawing it right now.
     ///
     /// Kept beside the worker's snapshot so a drag can reorder it on the spot.
@@ -79,11 +85,15 @@ pub struct App {
     /// Frames drawn so far, up to the few it takes to call the renderer proven
     /// (`renderer::confirm`).
     frames: u8,
+    theme: crate::settings::ThemeMode,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            renderer::watch_device(&rs.device);
+        }
 
         let (up_tx, update_rx) = channel();
         let up_ctx = cc.egui_ctx.clone();
@@ -108,6 +118,7 @@ impl App {
         // from here on — two writers each saving the whole thing meant whichever
         // saved last silently reverted the other.
         let settings = Settings::load();
+        theme::set_preference(&cc.egui_ctx, settings.theme);
         worker.send(Cmd::Unlocked);
         Self {
             update: None,
@@ -121,8 +132,10 @@ impl App {
             log: Vec::new(),
             log_all_selected: false,
             busy: None,
+            main_view: main_view::ViewState::default(),
             own_proxy_input: settings.own_proxy.clone(),
             custom_dns_input: settings.custom_dns.clone(),
+            screen: Screen::Main,
             providers_local: Vec::new(),
             providers_reordering: false,
             vpn_path_copied: None,
@@ -131,6 +144,7 @@ impl App {
             report_saved: None,
             report_clipboard_at: None,
             frames: 0,
+            theme: settings.theme,
         }
     }
 
@@ -142,8 +156,9 @@ impl App {
     fn update_banner(&self, ui: &mut egui::Ui) {
         let Some(rel) = &self.update else { return };
         let label = format!("⬆  Доступна новая версия — {}", rel.display_version());
-        let btn = egui::Button::new(egui::RichText::new(label).color(egui::Color32::BLACK))
-            .fill(theme::WARN)
+        let colors = theme::palette(ui);
+        let btn = egui::Button::new(egui::RichText::new(label).color(colors.on_accent))
+            .fill(colors.accent)
             .corner_radius(egui::CornerRadius::same(theme::RADIUS_SMALL))
             .min_size(egui::vec2(ui.available_width(), 32.0));
         if ui.add(btn).clicked() {
@@ -201,9 +216,6 @@ impl App {
                     if self.custom_dns_input.is_empty() && !status.custom_dns_text.is_empty() {
                         self.custom_dns_input = status.custom_dns_text.clone();
                     }
-                    if self.own_proxy_input.is_empty() && !status.own_proxy_text.is_empty() {
-                        self.own_proxy_input = status.own_proxy_text.clone();
-                    }
                     // A snapshot that arrives mid-drag must not overwrite the
                     // order under the pointer; the worker's copy is adopted
                     // again as soon as the drag is over.
@@ -213,6 +225,11 @@ impl App {
                     self.status = Some(*status);
                 }
                 Event::Busy(what) => self.busy = what,
+                Event::ProxySaved(cap, result) => self.main_view.proxy_saved(cap, result),
+                Event::Deactivated => {
+                    self.busy = None;
+                    self.screen = Screen::Deactivated;
+                }
             }
         }
     }
@@ -235,42 +252,20 @@ impl eframe::App for App {
         }
         self.drain_events();
 
-        // The root `Ui` eframe hands over carries no margin and no background of
-        // its own; `central_panel` is what puts the window colour behind it.
-        //
-        // `set_min_size` is not cosmetic padding: a frame sized to its contents
-        // paints only as far down as the contents reach, and the rest of the
-        // window shows eframe's clear colour instead — a visible seam across the
-        // window wherever the screen is shorter than it is.
-        const MARGIN: f32 = 18.0;
-        // The footer is a bottom panel *inside* this frame, so whatever the frame
-        // keeps below itself becomes dead space under the signature — 18 px of it,
-        // which was most of the gap between that line and the window edge. The
-        // footer pays for its own breathing room (`Panel::bottom`'s margin), so
-        // the frame needs almost nothing here.
-        const BOTTOM: f32 = 4.0;
-        let avail = ui.available_size();
-        // Narrow on the right so the scroll bar sits out in the border strip
-        // rather than in a gutter of its own; the content keeps its full margin
-        // because the scrolling area adds it back on the inside.
-        let frame = egui::Frame::central_panel(&ui.style().clone()).inner_margin(egui::Margin {
-            left: MARGIN as i8,
-            right: 4,
-            top: MARGIN as i8,
-            bottom: BOTTOM as i8,
-        });
-        frame.show(ui, |ui| {
-            // Height only, and with the margins taken off. Forcing the *width*
-            // to the full window pushes the frame's own padding outside it, and
-            // everything anchored to the right edge — every switch, every pencil
-            // — ends up clipped by exactly that much.
-            ui.set_min_height(avail.y - MARGIN - BOTTOM);
-            main_view::view(self, ui);
-        });
-
-        {
-            let ctx = ui.ctx().clone();
-            main_view::path_dialog(self, &ctx);
+        match self.screen {
+            Screen::Main => {
+                main_view::view(self, ui);
+                main_view::path_dialog(self, &ui.ctx().clone());
+            }
+            Screen::Deactivated => {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.heading("Анлокер полностью деактивирован");
+                    ui.label("Патчи, обход ошибки 400 и фоновые службы удалены.");
+                    if ui.button("Закрыть").clicked() {
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+            }
         }
     }
 }
@@ -289,7 +284,11 @@ pub fn run() -> Result<(), String> {
             viewport: {
                 let mut vp = egui::ViewportBuilder::default()
                     .with_inner_size([WIN_W, WIN_H])
-                    .with_min_inner_size([520.0, 620.0])
+                    // Width is fixed: the layout is built for one width, and
+                    // only the height is the user's to change.
+                    .with_min_inner_size([WIN_W, 570.0])
+                    .with_max_inner_size([WIN_W, 4000.0])
+                    .with_maximize_button(false)
                     .with_title(title());
                 // The exe resource covers Explorer and the taskbar; this is what
                 // puts the same picture in the title bar and Alt-Tab.
@@ -348,7 +347,7 @@ fn without_source_location(msg: &str) -> &str {
 }
 
 fn title() -> String {
-    format!("Antigravity Unlocker 2 v{}", update::current_version())
+    format!("Antigravity Unlocker {}", update::current_version())
 }
 
 #[cfg(test)]
